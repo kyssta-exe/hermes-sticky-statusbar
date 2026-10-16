@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from . import board
+from . import board, redact
 from .anchors import AnchorStore, anchor_key
 from .settings import StickyConfig
 from .sinks import Sink
@@ -244,7 +244,7 @@ class StickyPublisher:
         if not targets:
             return 0
         snapshot = self._collector.snapshot()
-        text = board.render_board(snapshot, self._config, current)
+        text = redact.scrub(board.render_board(snapshot, self._config, current))
         wrote = 0
         for target in targets:
             try:
