@@ -55,8 +55,15 @@ it. That is the closest thing any of these platforms has to a sticky.
 ## Install
 
 ```bash
-hermes plugins install kyssta-exe/hermes-sticky-statusbar
+# The plugin lives in a subdirectory, so name it after the '#'
+hermes plugins install kyssta-exe/hermes-sticky-statusbar#sticky-statusbar
 hermes plugins enable sticky-statusbar
+```
+
+Once the catalog entry lands, the plain name is enough:
+
+```bash
+hermes plugins install sticky-statusbar
 ```
 
 Or drop the directory in by hand:
@@ -123,9 +130,9 @@ the same keys.
 
 | Platform | Transport | Verified |
 |---|---|---|
-| Telegram | PTB client — send / edit / delete / silent pin, plain text (`parse_mode=None`) | ✅ end-to-end against the real Hermes plugin machinery |
-| Discord | `discord.py` client — silent send / edit / delete (Discord's adapter exposes no delete, so the native client does it) | ✅ same suite, factory + sink level |
-| Slack, Matrix, Mattermost, Google Chat, Feishu, DingTalk, Buzz | the adapter's `send` / `edit_message` / `delete_message` | ⚠️ best effort — the plugin tries, and reposts when a platform cannot edit |
+| Telegram | PTB client — send / edit / delete / silent pin, plain text (`parse_mode=None`) | ✅ transport-level tests + end-to-end through the real Hermes machinery (factory, hooks, real ticks into a recording bot) |
+| Discord | `discord.py` client — silent send / edit / delete (Discord's adapter exposes no delete, so the native client does it) | ✅ transport-level tests + the factory attaches and starts on a live loop |
+| Slack, Matrix, Mattermost, Google Chat, Feishu, DingTalk, Buzz | the adapter's `send` / `edit_message` / `delete_message` | ⚠️ best effort — the transport is tested against a fake adapter, but not against a live workspace; the plugin tries, and reposts when a platform cannot edit |
 
 Platforms with no edit API at all (Signal, iMessage, email, SMS, LINE, ntfy)
 cannot host a sticky; the plugin does not pretend otherwise. WhatsApp is
@@ -165,7 +172,7 @@ deliberately not wired — it is not worth a message per interval there.
 
 ```bash
 pip install "pytest>=8,<9" "pyyaml>=6,<7"
-python -m pytest tests/ -q          # 145 unit tests, no SDKs needed
+python -m pytest tests/ -q          # 166 unit tests, no SDKs needed
 ruff check sticky-statusbar/ tests/
 hermes plugins validate sticky-statusbar
 hermes plugins doctor sticky-statusbar
