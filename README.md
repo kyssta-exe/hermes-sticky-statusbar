@@ -46,7 +46,19 @@ the platform does have, and you choose which trade you want:
 | `mode` | What happens | Cost |
 |---|---|---|
 | `edit` (default) | one message, rewritten in place | quiet, never pings, **keeps its original position** — new messages appear below it |
-| `bump` | in-place edits as usual, **plus** a delete-and-repost at the end of each turn | always the newest message in the channel; each repost costs two API calls and can ping the channel |
+| `bump` | in-place edits as usual, **plus** a delete-and-repost at the end of each turn | always the newest message once a turn ends; each repost costs two API calls and can ping the channel |
+
+`bump` takes a second switch, because "the bottom" means two different things:
+
+| `bump_scope` | What it does |
+|---|---|
+| `turn_end` (default) | move the message when a turn finishes, so it lands below the answer |
+| `always` | **also stay at the bottom while a turn is running**: whenever something new lands below the board — your message, a tool notice, an interim reply — the board reposts itself under it, at most once per `bump_min_gap_seconds` (default 30) |
+
+`always` is what keeps it genuinely last. It learns about new messages from the
+platform's own event stream (Discord's gateway socket, a Telegram update
+observer), so staying at the bottom costs no extra polling — only the reposts
+themselves, which is why they are throttled.
 
 On Telegram the plugin also **pins the message silently** (`pin_telegram: true`),
 so it stays visible above the composer even when the conversation scrolls past
@@ -97,7 +109,9 @@ the same keys.
 | Key | Default | What it does |
 |---|---|---|
 | `enabled` | `true` | post and maintain the message at all |
-| `mode` | `edit` | `edit` (rewrite in place) or `bump` (repost at turn end so it is always the newest message) |
+| `mode` | `edit` | `edit` (rewrite in place) or `bump` (delete + repost so it is always the newest message) |
+| `bump_scope` | `turn_end` | `turn_end` = move it when a turn finishes; `always` = also keep it at the bottom while a turn runs |
+| `bump_min_gap_seconds` | `30` | minimum seconds between keep-at-the-bottom reposts (5–3600); a turn-end repost is never delayed by it |
 | `header` | `📊 Hermes` | first line of the board |
 | `interval_seconds` | `5` | seconds between updates (2–600); each platform enforces its own floor — Telegram 3s, Discord 5s |
 | `pin_telegram` | `true` | pin the message silently so Telegram keeps it visible |
@@ -145,7 +159,9 @@ deliberately not wired — it is not worth a message per interval there.
   draw from; Discord allows roughly five edits per five seconds per channel.
   That is why the interval is floored per platform, why an unchanged board costs
   **zero** API calls, and why a chat that keeps failing backs off exponentially
-  (up to five minutes) instead of retrying every tick.
+  (up to five minutes) instead of retrying every tick. `bump_scope: always`
+  follows the same rule: one repost per `bump_min_gap_seconds` per chat, and a
+  turn-end repost is never delayed by that gap.
 - **Settings changes land without a restart.** A running publisher re-reads its
   own settings (at most every 30 seconds) and adopts them in place, and the loop
   re-reads the interval every tick — so switching to `mode: bump`, changing
@@ -189,7 +205,7 @@ deliberately not wired — it is not worth a message per interval there.
 
 ```bash
 pip install "pytest>=8,<9" "pyyaml>=6,<7"
-python -m pytest tests/ -q          # 203 unit tests, no SDKs needed
+python -m pytest tests/ -q          # 220 unit tests, no SDKs needed
 ruff check sticky-statusbar/ tests/
 hermes plugins validate sticky-statusbar
 hermes plugins doctor sticky-statusbar

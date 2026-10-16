@@ -146,6 +146,10 @@ def _track_source(platform: str, source: Any) -> None:
         thread_id=str(source.get("thread_id") or ""),
         chat_type=str(source.get("chat_type") or "dm"),
     )
+    # The user's message is older than nothing: the board is no longer the last
+    # message in that chat. Transports with a watcher notice this themselves; on
+    # the others this is the signal.
+    pub.note_activity(str(chat_id))
 
 
 # ── slash command ────────────────────────────────────────────────────────────

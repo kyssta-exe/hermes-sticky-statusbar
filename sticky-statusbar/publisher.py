@@ -102,6 +102,8 @@ class StickyPublisher:
         self._tracked: dict[str, TrackedChat] = {}
         self._last_text: dict[str, str] = {}
         self._bump_pending: set[str] = set()
+        self._activity_pending: set[str] = set()
+        self._last_bump: dict[str, float] = {}
         self._failures: dict[str, int] = {}
         self._retry_after: dict[str, float] = {}
         self._pinned: set[str] = set()
@@ -206,6 +208,8 @@ class StickyPublisher:
             removed = self._tracked.pop(key, None) is not None
             self._last_text.pop(key, None)
             self._bump_pending.discard(key)
+            self._activity_pending.discard(key)
+            self._last_bump.pop(key, None)
             self._retry_after.pop(key, None)
             self._failures.pop(key, None)
         if removed:
@@ -231,6 +235,30 @@ class StickyPublisher:
             self._bump_pending.update(keys)
             return keys
 
+    def note_activity(self, chat_id: str, message_id: str = "") -> bool:
+        """A new message landed in a tracked chat, so the board is no longer last.
+
+        Only meaningful for ``mode: bump`` + ``bump_scope: always``; the message
+        that *is* the anchor is ignored, or the board would repost itself forever.
+        Throttling happens at publish time (``bump_min_gap_seconds``), not here:
+        the loop can be many events behind, and dropping the flag early would let
+        a burst of messages hide the newest one.
+        """
+        if not self._config.keep_at_bottom:
+            return False
+        key = anchor_key(self.platform, str(chat_id))
+        with self._lock:
+            if key not in self._tracked:
+                return False
+            if message_id and str(message_id) == str(self._store.get(self.platform, chat_id)):
+                return False          # that was our own board arriving
+            self._activity_pending.add(key)
+            return True
+
+    def _on_platform_message(self, chat_id: str, message_id: str, is_bot: bool) -> None:
+        """Sink callback: every message the platform client sees."""
+        self.note_activity(chat_id, message_id)
+
     def tracked_chats(self) -> list[TrackedChat]:
         with self._lock:
             return list(self._tracked.values())
@@ -250,6 +278,20 @@ class StickyPublisher:
             return False
         if self._stopped is None:
             self._stopped = asyncio.Event()
+        # Ask the transport to report every message it sees. This is what makes
+        # "stay at the bottom" possible while a turn is still running: the board
+        # has to learn that something landed below it, and only the platform's
+        # own event stream knows that without an extra API call.
+        watcher = getattr(self._sink, "watch", None)
+        if self._config.keep_at_bottom and callable(watcher):
+            try:
+                watching = bool(watcher(self._on_platform_message))
+            except Exception as exc:  # noqa: BLE001 - a custom sink may not support it
+                logger.debug("[%s] sticky-statusbar: watch() failed: %s", self.label, exc)
+                watching = False
+            if watching:
+                logger.info("[%s] sticky-statusbar: watching new messages to stay at the bottom",
+                            self.label)
         self._task = target.create_task(self._run())
         return True
 
@@ -330,16 +372,18 @@ class StickyPublisher:
             if now < self._retry_after.get(key, 0.0):
                 return False
             previous = self._last_text.get(key)
-            bump = key in self._bump_pending
+            turn_bump = key in self._bump_pending          # turn end, or /sticky bump
+            activity = key in self._activity_pending       # something landed below
             self._bump_pending.discard(key)
+            self._activity_pending.discard(key)
 
         anchor = self._store.get(target.platform, target.chat_id)
 
         if not anchor:
-            return await self._post(target, text)
+            return await self._post(target, text, now=now)
 
-        if bump and self._config.bump_mode:
-            return await self._repost(target, anchor, text)
+        if self._config.bump_mode and self._should_repost(key, turn_bump, activity, now):
+            return await self._repost(target, anchor, text, now)
 
         if previous == text:
             return False                    # nothing changed: zero API calls
@@ -357,19 +401,47 @@ class StickyPublisher:
             "[%s] sticky anchor %s unusable in %s — posting a fresh one",
             self.label, anchor, target.chat_id,
         )
-        return await self._post(target, text, stale=anchor)
+        return await self._post(target, text, stale=anchor, now=now)
 
-    async def _post(self, target: TrackedChat, text: str, stale: str = "") -> bool:
+    def _should_repost(self, key: str, turn_bump: bool, activity: bool, now: float) -> bool:
+        """Whether this tick should move the message instead of rewriting it.
+
+        Two independent reasons, and only one of them is throttled:
+
+        * a **turn-end** repost (``on_session_end``, ``/sticky bump``) is the point
+          of ``mode: bump`` — it must land below the answer it describes, so it is
+          never delayed;
+        * an **activity** repost (``bump_scope: always``) fires whenever something
+          new arrived below the board, and is capped at one per
+          ``bump_min_gap_seconds`` because each one is a delete plus a send
+          against the channel's rate limit.
+        """
+        if turn_bump:
+            return True
+        if not (activity and self._config.keep_at_bottom):
+            return False
+        gap = self._config.bump_min_gap_seconds
+        with self._lock:
+            return (now - self._last_bump.get(key, 0.0)) >= gap
+
+    async def _post(
+        self, target: TrackedChat, text: str, stale: str = "", now: float | None = None
+    ) -> bool:
         """Create the anchor (optionally replacing a stale one) and pin it."""
         message_id = await self._sink.send(target.chat_id, text, target.thread_id)
         if not message_id:
             self._note_failure(target)
             return False
+        key = anchor_key(target.platform, target.chat_id)
         self._store.set(target.platform, target.chat_id, message_id)
         with self._lock:
-            self._last_text[anchor_key(target.platform, target.chat_id)] = text
-            self._failures.pop(anchor_key(target.platform, target.chat_id), None)
-            self._pinned.discard(anchor_key(target.platform, target.chat_id))
+            self._last_text[key] = text
+            # A fresh board is at the bottom by definition — this is also the
+            # clock the gap is measured against, so it takes the tick's time
+            # rather than the wall clock.
+            self._last_bump[key] = now if now is not None else time.time()
+            self._failures.pop(key, None)
+            self._pinned.discard(key)
         if stale and stale != message_id:
             # Delete only after the replacement exists: the chat never shows a
             # gap where the status used to be.
@@ -377,9 +449,11 @@ class StickyPublisher:
         await self._maybe_pin(target, message_id)
         return True
 
-    async def _repost(self, target: TrackedChat, anchor: str, text: str) -> bool:
-        """``mode: bump`` — put the message below the turn's answer."""
-        return await self._post(target, text, stale=anchor)
+    async def _repost(
+        self, target: TrackedChat, anchor: str, text: str, now: float | None = None
+    ) -> bool:
+        """``mode: bump`` — put the message below whatever came after it."""
+        return await self._post(target, text, stale=anchor, now=now)
 
     async def _maybe_pin(self, target: TrackedChat, message_id: str) -> None:
         if not (self._config.pin_telegram and self._sink.supports_pin):

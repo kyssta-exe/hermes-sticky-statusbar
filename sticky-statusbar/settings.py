@@ -20,6 +20,13 @@ PLUGIN_ID = "sticky-statusbar"
 
 MODES = ("edit", "bump")
 
+# ``mode: bump`` + ``bump_scope``: what makes the message move.
+#   turn_end — repost when a turn finishes, so it lands below the answer
+#   always   — also repost while a turn runs, whenever something new landed below
+#              the board (throttled by bump_min_gap_seconds, because each repost
+#              is a delete plus a send against the channel's rate limit)
+BUMP_SCOPES = ("turn_end", "always")
+
 # Per-platform floor for ``interval_seconds``. The chat is the scarce resource:
 # Telegram counts a send and an edit against the SAME per-chat allowance (and
 # the gateway's own streaming preview edits draw from it), Discord allows about
@@ -99,6 +106,8 @@ class StickyConfig:
 
     enabled: bool = True
     mode: str = _DEFAULT_MODE                 # edit | bump
+    bump_scope: str = "turn_end"              # turn_end | always
+    bump_min_gap_seconds: int = 30
     header: str = _DEFAULT_HEADER
     interval_seconds: int = _DEFAULT_INTERVAL
     pin_telegram: bool = True
@@ -121,6 +130,11 @@ class StickyConfig:
     def bump_mode(self) -> bool:
         """``mode: bump`` — repost at turn end instead of editing in place."""
         return self.mode == "bump"
+
+    @property
+    def keep_at_bottom(self) -> bool:
+        """Repost while a turn runs too, not only when it ends."""
+        return self.mode == "bump" and self.bump_scope == "always"
 
     def interval_for(self, platform: str) -> int:
         """The configured interval, floored at the platform's safe minimum."""
@@ -148,6 +162,10 @@ class StickyConfig:
         return cls(
             enabled=_bool(cfg("enabled", True), True),
             mode=_choice(cfg("mode", _DEFAULT_MODE), MODES, _DEFAULT_MODE),
+            bump_scope=_choice(cfg("bump_scope", "turn_end"), BUMP_SCOPES, "turn_end"),
+            bump_min_gap_seconds=_int(
+                cfg("bump_min_gap_seconds", 30), 30, 5, 3600
+            ),
             header=header[:80] or _DEFAULT_HEADER,
             interval_seconds=_int(
                 cfg("interval_seconds", _DEFAULT_INTERVAL), _DEFAULT_INTERVAL, 2, 600
@@ -173,7 +191,8 @@ def describe(config: StickyConfig | None = None) -> str:
     cfg = config or StickyConfig()
     pin = " · pinned" if cfg.pin_telegram else ""
     chats = f" · {len(cfg.chats)} fixed chat(s)" if cfg.chats else ""
+    scope = f" ({cfg.bump_scope})" if cfg.bump_mode else ""
     return (
-        f"sticky-statusbar: {'on' if cfg.enabled else 'off'} · {cfg.mode} · "
+        f"sticky-statusbar: {'on' if cfg.enabled else 'off'} · {cfg.mode}{scope} · "
         f"every {cfg.interval_seconds}s{pin}{chats}"
     )

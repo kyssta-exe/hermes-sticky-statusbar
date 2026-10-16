@@ -352,6 +352,165 @@ def test_a_bump_request_is_honoured_after_the_mode_changes(collector, store):
     assert len(sink.sent) == 2                     # reposted, not edited in place
 
 
+# ── staying at the bottom ────────────────────────────────────────────────────
+
+
+def bump_always(**overrides):
+    """``mode: bump`` + ``bump_scope: always`` — the keep-at-bottom setup."""
+    base = dict(mode="bump", bump_scope="always", bump_min_gap_seconds=30)
+    base.update(overrides)
+    return replace(StickyConfig(), **base)
+
+
+def test_activity_is_ignored_unless_keeping_at_the_bottom(collector, store):
+    for config in (StickyConfig(), replace(StickyConfig(), mode="bump")):
+        publisher, _ = make_publisher(collector, config, store)
+        publisher.track("42")
+        assert publisher.note_activity("42", "999") is False
+        assert publisher._activity_pending == set()
+
+
+def test_activity_reposts_the_board_under_the_new_message(collector, store):
+    publisher, sink = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))                 # the board is created
+    assert len(sink.sent) == 1
+
+    assert publisher.note_activity("42", "999") is True    # someone spoke
+    run(publisher.tick(1_000_000.0 + 31))
+    assert len(sink.sent) == 2                       # reposted below it
+    assert store.get("telegram", "42") == "m2"
+    assert sink.deleted == [("42", "m1")]
+
+
+def test_the_repost_is_throttled_by_the_gap(collector, store):
+    publisher, sink = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    publisher.note_activity("42", "999")
+    run(publisher.tick(1_000_000.0 + 31))
+    assert len(sink.sent) == 2
+
+    # The board itself changes (a tool starts) and another message lands, but the
+    # gap has not passed: it is rewritten in place instead of moved.
+    collector.on_pre_tool_call(tool_name="read_file", args={}, tool_call_id="x")
+    publisher.note_activity("42", "1000")
+    run(publisher.tick(1_000_000.0 + 35))
+    assert len(sink.sent) == 2                       # did not move
+    assert len(sink.edits) == 1                      # but stayed current
+    assert "read_file" in sink.edits[0][2]
+
+
+def test_the_gap_resets_after_a_repost(collector, store):
+    publisher, sink = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    publisher.note_activity("42", "999")
+    run(publisher.tick(1_000_000.0 + 31))
+    publisher.note_activity("42", "1000")
+    run(publisher.tick(1_000_000.0 + 70))            # gap has passed again
+    assert len(sink.sent) == 3
+
+
+def test_a_turn_end_repost_is_never_throttled(collector, store):
+    """It has to land below the answer that just went out."""
+    publisher, sink = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    publisher.note_activity("42", "999")
+    run(publisher.tick(1_000_000.0 + 31))            # activity repost
+    assert len(sink.sent) == 2
+    publisher.request_bump("42")                     # the turn ended right after
+    run(publisher.tick(1_000_000.0 + 32))
+    assert len(sink.sent) == 3
+
+
+def test_the_board_does_not_repost_on_its_own_arrival(collector, store):
+    """Otherwise it would chase itself forever: post, see itself, repost."""
+    publisher, sink = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    assert publisher.note_activity("42", "m1") is False     # that IS the board
+    run(publisher.tick(1_000_000.0 + 31))
+    assert len(sink.sent) == 1
+
+
+def test_activity_for_an_untracked_chat_is_ignored(collector, store):
+    publisher, sink = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    assert publisher.note_activity("999", "1000") is False
+    assert publisher._activity_pending == set()
+
+
+def test_untracking_forgets_pending_activity(collector, store):
+    publisher, _ = make_publisher(collector, bump_always(), store)
+    publisher.track("42")
+    publisher.note_activity("42", "999")
+    publisher.untrack("42")
+    assert publisher._activity_pending == set()
+    assert publisher._last_bump == {}
+
+
+def test_starting_the_loop_subscribes_to_the_platform_events(collector, store):
+    """Staying at the bottom only works if the publisher hears about new messages."""
+    from sticky_statusbar.publisher import StickyPublisher
+
+    class WatchingSink:
+        platform = "telegram"
+        supports_pin = False
+
+        def __init__(self):
+            self.sent: list[str] = []
+            self.callback = None
+
+        def available(self):
+            return True
+
+        def watch(self, callback):
+            self.callback = callback
+            return True
+
+        async def send(self, chat_id, text, thread_id=""):
+            self.sent.append(text)
+            return "m1"
+
+        async def edit(self, chat_id, message_id, text):
+            return True
+
+        async def delete(self, chat_id, message_id):
+            return True
+
+    sink = WatchingSink()
+    publisher = StickyPublisher("telegram", sink, collector, bump_always(), store=store)
+    publisher.track("42")
+
+    async def scenario():
+        publisher.start()
+        await asyncio.sleep(0)
+        assert sink.callback is not None
+        sink.callback("42", "999", False)            # the transport reports a message
+        await asyncio.sleep(0)
+        publisher.stop()
+        await asyncio.sleep(0)
+
+    run(scenario())
+    assert publisher._activity_pending == {"telegram:42"}
+
+
+def test_a_transport_without_events_never_subscribes(collector, store):
+    publisher, _ = make_publisher(collector, bump_always(), store)   # FakeSink: no watch()
+    publisher.track("42")
+
+    async def scenario():
+        publisher.start()
+        await asyncio.sleep(0)
+        publisher.stop()
+        await asyncio.sleep(0)
+
+    run(scenario())          # must not raise on a sink without watch()
+
+
 # ── live settings ────────────────────────────────────────────────────────────
 
 

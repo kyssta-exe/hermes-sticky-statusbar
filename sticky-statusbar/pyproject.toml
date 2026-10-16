@@ -1,6 +1,6 @@
 [project]
 name = "sticky-statusbar"
-version = "1.0.3"
+version = "1.0.4"
 description = "A self-updating Hermes status message that lives in your chat"
 readme = "README.md"
 license = { text = "MIT" }

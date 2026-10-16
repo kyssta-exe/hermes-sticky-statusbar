@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sticky_statusbar.sinks import AdapterSink, DiscordSink, TelegramSink, build_sink
+from sticky_statusbar.sinks import AdapterSink, DiscordSink, Sink, TelegramSink, build_sink
 
 
 def run(coro):
@@ -180,6 +180,11 @@ class FakeDiscordBot:
         self._cached = cached
         self._fetchable = fetchable
         self.fetched: list[int] = []
+        self.listeners: list[tuple] = []
+
+    def add_listener(self, callback, name: str = "on_message") -> None:
+        """discord.py's listener registration — one entry per (callback, event)."""
+        self.listeners.append((callback, name))
 
     def get_channel(self, channel_id):
         if not self._cached:
@@ -329,3 +334,111 @@ def test_build_sink_falls_back_to_the_adapter_for_everything_else():
     assert isinstance(build_sink("slack", None, FakeAdapter()), AdapterSink)
     assert isinstance(build_sink("telegram", None, FakeAdapter()), AdapterSink)
     assert isinstance(build_sink("", None, FakeAdapter()), AdapterSink)
+
+
+# ── watching for new messages ────────────────────────────────────────────────
+
+
+class ListeningTelegramApplication:
+    """PTB's ``Application`` surface the sink needs to subscribe."""
+
+    def __init__(self) -> None:
+        self.bot = FakeTelegramBot()
+        self.handlers: list[tuple] = []
+
+    def add_handler(self, handler, group: int = 0):
+        self.handlers.append((handler, group))
+
+
+class FakeTelegramUpdate:
+    def __init__(self, chat_id, message_id, is_bot=False) -> None:
+        self.effective_chat = type("Chat", (), {"id": chat_id})()
+        self.effective_message = type("Msg", (), {"message_id": message_id})()
+        self.effective_user = type("User", (), {"is_bot": is_bot})()
+
+
+def test_the_base_sink_cannot_watch():
+    assert Sink().watch(lambda *args: None) is False
+
+
+def test_telegram_watch_observes_updates_in_its_own_handler_group():
+    """Group 99: PTB runs groups in order, so an observer there can never
+    pre-empt the core handlers (approvals, model pickers)."""
+    app = ListeningTelegramApplication()
+    sink = TelegramSink(app, None)
+    seen: list[tuple] = []
+    assert sink.watch(lambda *args: seen.append(args)) is True
+    assert len(app.handlers) == 1
+    handler, group = app.handlers[0]
+    assert group == 99
+    assert handler.block is False                 # off the dispatcher's critical path
+
+    run(handler.callback(FakeTelegramUpdate(-100123, 77, is_bot=False), None))
+    assert seen == [("-100123", "77", False)]
+
+
+def test_telegram_watch_is_idempotent_and_marks_the_sender():
+    app = ListeningTelegramApplication()
+    sink = TelegramSink(app, None)
+    seen: list[tuple] = []
+    sink.watch(lambda *args: seen.append(args))
+    sink.watch(lambda *args: seen.append(("second",)))     # ignored: already watching
+    assert len(app.handlers) == 1
+
+    handler, _ = app.handlers[0]
+    run(handler.callback(FakeTelegramUpdate(5, 6, is_bot=True), None))
+    assert seen == [("5", "6", True)]
+
+
+def test_telegram_watch_never_raises_out_of_the_observer():
+    app = ListeningTelegramApplication()
+    sink = TelegramSink(app, None)
+
+    def explode(*args):
+        raise RuntimeError("consumer blew up")
+
+    sink.watch(explode)
+    handler, _ = app.handlers[0]
+    run(handler.callback(FakeTelegramUpdate(1, 2), None))   # must not propagate
+
+
+def test_discord_watch_uses_the_existing_gateway_socket():
+    """No extra REST call: discord.py already delivers every message."""
+    bot = FakeDiscordBot(FakeDiscordChannel())
+    sink = DiscordSink(bot, None)
+    seen: list[tuple] = []
+    assert sink.watch(lambda *args: seen.append(args)) is True
+    assert [name for _, name in bot.listeners] == ["on_message"]
+
+    callback, _ = bot.listeners[0]
+    message = type(
+        "Message", (),
+        {
+            "id": 4242,
+            "channel": type("Channel", (), {"id": 1555124062546825278})(),
+            "author": type("Author", (), {"bot": True})(),
+        },
+    )()
+    run(callback(message))
+    assert seen == [("1555124062546825278", "4242", True)]
+
+
+def test_discord_watch_is_idempotent_and_survives_a_broken_callback():
+    bot = FakeDiscordBot(FakeDiscordChannel())
+    sink = DiscordSink(bot, None)
+    sink.watch(lambda *args: None)
+    sink.watch(lambda *args: None)                  # ignored: already watching
+    assert len(bot.listeners) == 1
+
+    def boom(*args):
+        raise RuntimeError("consumer blew up")
+
+    sink._watching = False
+    sink.watch(boom)
+    callback, _ = bot.listeners[-1]
+    run(callback(type("M", (), {"id": 1, "channel": None, "author": None})()))
+
+
+def test_a_client_without_listener_support_is_reported_not_crashed():
+    assert DiscordSink(object(), None).watch(lambda *args: None) is False
+    assert TelegramSink(object(), None).watch(lambda *args: None) is False

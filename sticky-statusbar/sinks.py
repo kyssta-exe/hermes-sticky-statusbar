@@ -40,6 +40,16 @@ class Sink:
         """Whether this sink can talk to its platform at all."""
         return True
 
+    def watch(self, callback: Any) -> bool:
+        """Observe every new message this client sees; False when unsupported.
+
+        *callback* is called as ``callback(chat_id, message_id, author_is_bot)``.
+        The publisher uses it to notice that the board is no longer the last
+        message — the only way to keep it at the bottom while a turn is still
+        running, since no platform exposes "the pinned-to-bottom message".
+        """
+        return False
+
     def _chat(self, chat_id: str) -> Any:
         """Normalize a chat id for the platform's API."""
         return chat_id
@@ -82,8 +92,10 @@ class TelegramSink(Sink):
     supports_pin = True
 
     def __init__(self, native: Any, adapter: Any = None) -> None:
+        self._application = native
         self._bot = getattr(native, "bot", None)
         self._adapter = adapter
+        self._watching = False
 
     def available(self) -> bool:
         return self._bot is not None
@@ -162,6 +174,42 @@ class TelegramSink(Sink):
             return False
         return True
 
+    def watch(self, callback: Any) -> bool:
+        """Observe every update through a PTB handler in its own group.
+
+        Group 99 on purpose: PTB runs each group in order and a handler in a
+        different group cannot pre-empt the core handlers, so this observer can
+        never swallow an approval button or a model picker. ``block=False``
+        keeps it off the dispatcher's critical path.
+        """
+        app = self._application
+        if app is None or getattr(self, "_watching", False):
+            return False
+        try:
+            from telegram.ext import MessageHandler, filters
+
+            async def _on_update(update: Any, _context: Any) -> None:
+                try:
+                    message = getattr(update, "effective_message", None)
+                    chat = getattr(update, "effective_chat", None)
+                    if message is None or chat is None:
+                        return
+                    user = getattr(update, "effective_user", None)
+                    callback(
+                        str(getattr(chat, "id", "") or ""),
+                        str(getattr(message, "message_id", "") or ""),
+                        bool(getattr(user, "is_bot", False)),
+                    )
+                except Exception:  # noqa: BLE001 - an observer never raises
+                    pass
+
+            app.add_handler(MessageHandler(filters.ALL, _on_update, block=False), group=99)
+        except Exception as exc:  # noqa: BLE001 - no PTB, or a closed app
+            logger.debug("[telegram] sticky-statusbar: could not watch updates: %s", exc)
+            return False
+        self._watching = True
+        return True
+
 
 # ── Discord ──────────────────────────────────────────────────────────────────
 
@@ -177,6 +225,7 @@ class DiscordSink(Sink):
     def __init__(self, native: Any, adapter: Any = None) -> None:
         self._bot = native
         self._adapter = adapter
+        self._watching = False
 
     def available(self) -> bool:
         return self._bot is not None
@@ -239,6 +288,40 @@ class DiscordSink(Sink):
         except Exception as exc:  # noqa: BLE001
             logger.debug("[discord] sticky delete failed in %s: %s", chat_id, exc)
             return False
+        return True
+
+    def watch(self, callback: Any) -> bool:
+        """Observe every message the client sees, over the existing gateway socket.
+
+        Discord caches no "newest message id" on a DM channel, so the position has
+        to be inferred from the events the bot already receives — which is free:
+        no extra REST call, no polling. The listener sees the bot's own messages
+        too, including the board itself, so the publisher has to ignore the
+        message that *is* the anchor or it would repost forever.
+        """
+        bot = self._bot
+        adder = getattr(bot, "add_listener", None)
+        if not callable(adder) or getattr(self, "_watching", False):
+            return False
+
+        async def _on_message(message: Any) -> None:
+            try:
+                channel = getattr(message, "channel", None)
+                chat_id = str(getattr(channel, "id", "") or "")
+                message_id = str(getattr(message, "id", "") or "")
+                if not chat_id or not message_id:
+                    return
+                author = getattr(message, "author", None)
+                callback(chat_id, message_id, bool(getattr(author, "bot", False)))
+            except Exception:  # noqa: BLE001 - an observer never raises
+                pass
+
+        try:
+            adder(_on_message, "on_message")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[discord] sticky-statusbar: could not watch messages: %s", exc)
+            return False
+        self._watching = True
         return True
 
 

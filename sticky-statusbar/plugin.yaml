@@ -1,6 +1,6 @@
 name: sticky-statusbar
 label: Sticky Statusbar
-version: 1.0.3
+version: 1.0.4
 manifest_version: 2
 api_version: 1
 license: MIT
@@ -52,6 +52,23 @@ config_schema:
       edit = keep one message and rewrite it in place (quiet, the position never
       moves); bump = delete and repost the message when a turn ends, so it is
       always the newest message in the channel
+  bump_scope:
+    type: str
+    choices: [turn_end, always]
+    default: turn_end
+    label: Repost scope
+    description: >-
+      Only used by mode: bump. turn_end = move the message to the bottom when a
+      turn finishes; always = also keep it at the bottom while a turn runs, by
+      reposting whenever something new landed below it (throttled by the gap
+      below, because every repost is a delete plus a send)
+  bump_min_gap_seconds:
+    type: int
+    default: 30
+    label: Repost gap (s)
+    description: >-
+      Minimum seconds between "keep at the bottom" reposts during a turn (5-3600).
+      A turn-end repost is never delayed by this
   header:
     type: str
     default: "📊 Hermes"
