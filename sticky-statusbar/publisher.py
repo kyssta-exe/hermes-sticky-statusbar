@@ -141,6 +141,18 @@ class StickyPublisher:
             )
             return True
 
+    def update_config(self, config: StickyConfig) -> None:
+        """Swap in freshly-resolved settings.
+
+        A settings change (the Desktop form, ``hermes config set``) has to land on
+        a publisher that is already running: reloading the plugin re-runs
+        ``register()`` but the live task holds its own reference, so without this
+        every change would wait for a gateway restart. The loop re-reads the
+        interval each tick, so both the mode and the cadence follow.
+        """
+        with self._lock:
+            self._config = config
+
     def untrack(self, chat_id: str) -> bool:
         """Stop tracking a chat (the message itself is left where it is)."""
         key = anchor_key(self.platform, chat_id)
@@ -214,11 +226,10 @@ class StickyPublisher:
             return False
 
     async def _run(self) -> None:
-        interval = self._config.interval_for(self.platform)
         stopped = self._stopped or asyncio.Event()
         logger.info(
             "[%s] sticky-statusbar: updating the status message every %ss (%s mode)",
-            self.label, interval, self._config.mode,
+            self.label, self._config.interval_for(self.platform), self._config.mode,
         )
         while not stopped.is_set():
             try:
@@ -227,6 +238,9 @@ class StickyPublisher:
                 raise
             except Exception as exc:  # noqa: BLE001 - never take the gateway down
                 logger.debug("[%s] sticky tick failed: %s", self.label, exc)
+            # Re-read per tick: a settings change must land on the next update
+            # instead of holding the interval the loop was born with.
+            interval = self._config.interval_for(self.platform)
             try:
                 await asyncio.wait_for(stopped.wait(), timeout=interval)
             except TimeoutError:
@@ -386,9 +400,12 @@ def wire(
 
     name = (platform or "").lower()
     existing = PUBLISHERS.get(name)
-    if existing is not None and existing.running:
-        return existing
     if existing is not None:
+        if existing.running:
+            # Already publishing: adopt the new settings rather than stacking a
+            # second loop, and rather than ignoring the change until a restart.
+            existing.update_config(config)
+            return existing
         existing.stop()
 
     publisher = StickyPublisher(

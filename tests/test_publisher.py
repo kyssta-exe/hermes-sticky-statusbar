@@ -284,6 +284,74 @@ def test_a_chat_that_succeeds_after_a_failure_clears_its_backoff(collector, stor
 # ── lifecycle ────────────────────────────────────────────────────────────────
 
 
+def test_a_rewire_with_new_settings_retargets_the_running_publisher(collector, store):
+    """A settings change must land on the publisher that is already running:
+    reloading the plugin re-runs register(), but the live task holds its own
+    config, so without this every change waits for a gateway restart."""
+    from sticky_statusbar import publisher as publisher_mod
+
+    class Bot:
+        async def send_message(self, **kwargs):        # pragma: no cover - not ticked
+            raise AssertionError("no send expected")
+
+    class Native:
+        bot = Bot()
+
+    async def scenario():
+        first = publisher_mod.wire("telegram", Native(), None, collector, StickyConfig(),
+                                   store=store)
+        first.start()
+        await asyncio.sleep(0)
+        assert first.running is True
+
+        bumped = replace(StickyConfig(), mode="bump", interval_seconds=60)
+        second = publisher_mod.wire("telegram", Native(), None, collector, bumped, store=store)
+
+        result = (second is first, first._config.mode, first._config.interval_for("telegram"),
+                  publisher_mod.active_publishers())
+        first.stop()
+        await asyncio.sleep(0)
+        return result
+
+    same_object, mode, interval, publishers = run(scenario())
+    assert same_object is True                     # no second loop stacked
+    assert mode == "bump"                          # the new settings were adopted
+    assert interval == 60
+    assert publishers == 1
+
+
+def test_a_dead_publisher_is_replaced_rather_than_adopted(collector, store):
+    from sticky_statusbar import publisher as publisher_mod
+
+    class Native:
+        bot = object()
+
+    async def scenario():
+        first = publisher_mod.wire("telegram", Native(), None, collector, StickyConfig(),
+                                   store=store)
+        first.start()
+        await asyncio.sleep(0)
+        first.stop()
+        await asyncio.sleep(0)
+        second = publisher_mod.wire("telegram", Native(), None, collector, StickyConfig(),
+                                    store=store)
+        result = second is not first
+        publisher_mod.stop_all()
+        return result
+
+    assert run(scenario()) is True
+
+
+def test_a_bump_request_is_honoured_after_the_mode_changes(collector, store):
+    publisher, sink = make_publisher(collector, store=store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    publisher.update_config(replace(StickyConfig(), mode="bump"))
+    publisher.request_bump("42")
+    run(publisher.tick(1_000_005.0))
+    assert len(sink.sent) == 2                     # reposted, not edited in place
+
+
 def test_start_requires_a_loop_and_is_idempotent(collector, store):
     publisher, _ = make_publisher(collector, store=store)
     assert publisher.running is False

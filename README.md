@@ -146,6 +146,11 @@ deliberately not wired — it is not worth a message per interval there.
   That is why the interval is floored per platform, why an unchanged board costs
   **zero** API calls, and why a chat that keeps failing backs off exponentially
   (up to five minutes) instead of retrying every tick.
+- **Settings changes land without a restart.** Reloading the plugin re-runs
+  `register()`, and a running publisher adopts the new settings in place — the
+  mode takes effect on the next update and the interval is re-read every tick,
+  so an edit to `interval_seconds` or a switch to `mode: bump` needs no gateway
+  restart.
 - **The message is never lost.** The anchor id is stored in
   `$HERMES_HOME/plugin-data/sticky-statusbar/anchors.json`. If an edit fails —
   the message was deleted by hand, the record is stale after a restart, or the
@@ -159,6 +164,16 @@ deliberately not wired — it is not worth a message per interval there.
 
 ## Disclosure
 
+- **It redacts what a normal reply would have redacted.** An agent's own message
+  passes through Hermes's redactor on its way to the platform; a message this
+  plugin posts goes out through the platform client and past that pass, while the
+  board echoes the first characters of a tool's command. So `redact.py` scrubs
+  the rendered text first — vendor credential prefixes, credential-shaped
+  assignments and headers, URL userinfo, and long opaque blobs. It is
+  intentionally self-contained (Hermes's own redactor is a private core module)
+  and deliberately biased toward masking: a masked word on a status line is
+  cosmetic, a leaked token is not. A 40-character hex string in a command hint is
+  masked for the same reason.
 - **Network calls:** none of its own. Every request is one API call to the
   gateway platform you already run (Telegram's Bot API, Discord's API, …) through
   the client that platform's adapter provides. No telemetry, no third parties.
@@ -172,7 +187,7 @@ deliberately not wired — it is not worth a message per interval there.
 
 ```bash
 pip install "pytest>=8,<9" "pyyaml>=6,<7"
-python -m pytest tests/ -q          # 166 unit tests, no SDKs needed
+python -m pytest tests/ -q          # 198 unit tests, no SDKs needed
 ruff check sticky-statusbar/ tests/
 hermes plugins validate sticky-statusbar
 hermes plugins doctor sticky-statusbar
