@@ -262,12 +262,13 @@ def _setup_argparse(subparser: Any) -> None:
 # ── registration ─────────────────────────────────────────────────────────────
 
 
-def _wire_factory(platform: str):
+def _wire_factory(platform: str, ctx: Any = None):
     """Build the ``register_platform_handler`` factory for one platform.
 
     The adapter calls it with its native client at connect time (and again on a
     late plugin load, on the platform's event loop), which is where the publisher
-    gets its loop from.
+    gets its loop from. ``ctx`` rides along so the running publisher can re-read
+    settings later without a restart.
     """
 
     def _wire(native: Any, adapter: Any) -> None:
@@ -280,6 +281,7 @@ def _wire_factory(platform: str):
             config,
             store=get_store(),
             label=getattr(adapter, "name", "") or platform,
+            ctx=ctx,
         )
         if not pub.available:
             logger.warning(
@@ -345,7 +347,7 @@ def register(ctx: Any) -> None:
     # The sticky itself: one factory per platform, each handed the live native
     # client when that platform connects.
     for platform in PLATFORMS:
-        ctx.register_platform_handler(platform, _wire_factory(platform))
+        ctx.register_platform_handler(platform, _wire_factory(platform, ctx))
 
     ctx.register_command(
         "sticky", _handle_sticky, description="Show the live agent status board",

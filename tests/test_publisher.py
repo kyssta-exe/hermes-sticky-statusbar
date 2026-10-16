@@ -352,6 +352,92 @@ def test_a_bump_request_is_honoured_after_the_mode_changes(collector, store):
     assert len(sink.sent) == 2                     # reposted, not edited in place
 
 
+# ── live settings ────────────────────────────────────────────────────────────
+
+
+class StubCtx:
+    """A ``PluginContext`` that only answers ``get_config``, counting reads."""
+
+    def __init__(self, values: dict | None = None) -> None:
+        self.values = values or {}
+        self.reads = 0
+
+    def get_config(self, key, default=None):
+        self.reads += 1
+        return self.values.get(key, default)
+
+
+def test_a_settings_change_reaches_a_running_publisher(collector, store):
+    """The platform factory is keyed per native client and never re-runs on a hot
+    reload, so the loop is what has to notice a settings change."""
+    ctx = StubCtx({"mode": "edit"})
+    publisher, sink = make_publisher(collector, store=store)
+    publisher.bind_context(ctx)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    assert len(sink.sent) == 1
+
+    ctx.values["mode"] = "bump"                    # a settings save
+    publisher.request_bump("42")
+    run(publisher.tick(1_000_000.0 + publisher._settings_checked + 31))
+    assert len(sink.sent) == 2                     # the new mode was adopted
+    assert publisher._config.mode == "bump"
+
+
+def test_the_settings_re_read_is_throttled(collector, store):
+    ctx = StubCtx({"mode": "edit"})
+    publisher, _ = make_publisher(collector, store=store)
+    publisher.bind_context(ctx)
+    publisher.track("42")
+
+    run(publisher.tick(1_000_000.0))               # first tick always reads
+    first = ctx.reads
+    assert first >= 1
+    run(publisher.tick(1_000_001.0))               # inside the window: no read
+    assert ctx.reads == first
+    run(publisher.tick(1_000_000.0 + publisher._settings_checked + 31))
+    assert ctx.reads > first
+
+
+def test_a_disabled_plugin_stops_publishing_without_a_restart(collector, store):
+    ctx = StubCtx({"enabled": True})
+    publisher, sink = make_publisher(collector, store=store)
+    publisher.bind_context(ctx)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    assert len(sink.sent) == 1
+
+    ctx.values["enabled"] = False
+    run(publisher.tick(1_000_000.0 + publisher._settings_checked + 31))
+    assert len(sink.sent) == 1                     # nothing published while off
+    assert publisher.running is False or publisher.ticks == 2
+
+    ctx.values["enabled"] = True
+    run(publisher.tick(1_000_000.0 + publisher._settings_checked + 62))
+    assert len(sink.sent) >= 1                     # and it comes back
+
+
+def test_a_settings_read_that_raises_keeps_the_previous_settings(collector, store):
+    class Angry:
+        def get_config(self, key, default=None):
+            raise RuntimeError("config store exploded")
+
+    publisher, sink = make_publisher(collector, store=store)
+    publisher.bind_context(Angry())
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    assert len(sink.sent) == 1                     # still publishing
+    assert publisher._config.mode == "edit"        # unchanged
+
+
+def test_a_publisher_without_a_context_never_refreshes(collector, store):
+    publisher, sink = make_publisher(collector, store=store)
+    publisher.track("42")
+    run(publisher.tick(1_000_000.0))
+    assert publisher.refresh_settings(1_000_000.0) is False
+    assert len(sink.sent) == 1
+
+
 def test_start_requires_a_loop_and_is_idempotent(collector, store):
     publisher, _ = make_publisher(collector, store=store)
     assert publisher.running is False

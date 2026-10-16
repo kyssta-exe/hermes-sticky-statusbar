@@ -97,7 +97,7 @@ the same keys.
 | Key | Default | What it does |
 |---|---|---|
 | `enabled` | `true` | post and maintain the message at all |
-| `mode` | `edit` | `edit` (rewrite in place) or `bump` (repost at turn end) |
+| `mode` | `edit` | `edit` (rewrite in place) or `bump` (repost at turn end so it is always the newest message) |
 | `header` | `📊 Hermes` | first line of the board |
 | `interval_seconds` | `5` | seconds between updates (2–600); each platform enforces its own floor — Telegram 3s, Discord 5s |
 | `pin_telegram` | `true` | pin the message silently so Telegram keeps it visible |
@@ -146,11 +146,13 @@ deliberately not wired — it is not worth a message per interval there.
   That is why the interval is floored per platform, why an unchanged board costs
   **zero** API calls, and why a chat that keeps failing backs off exponentially
   (up to five minutes) instead of retrying every tick.
-- **Settings changes land without a restart.** Reloading the plugin re-runs
-  `register()`, and a running publisher adopts the new settings in place — the
-  mode takes effect on the next update and the interval is re-read every tick,
-  so an edit to `interval_seconds` or a switch to `mode: bump` needs no gateway
-  restart.
+- **Settings changes land without a restart.** A running publisher re-reads its
+  own settings (at most every 30 seconds) and adopts them in place, and the loop
+  re-reads the interval every tick — so switching to `mode: bump`, changing
+  `interval_seconds`, or switching the plugin off lands within half a minute.
+  This exists because a platform factory runs once per native client: a hot
+  plugin reload never re-runs it, and without the re-read a change would wait for
+  a gateway restart.
 - **The message is never lost.** The anchor id is stored in
   `$HERMES_HOME/plugin-data/sticky-statusbar/anchors.json`. If an edit fails —
   the message was deleted by hand, the record is stale after a restart, or the
@@ -187,7 +189,7 @@ deliberately not wired — it is not worth a message per interval there.
 
 ```bash
 pip install "pytest>=8,<9" "pyyaml>=6,<7"
-python -m pytest tests/ -q          # 198 unit tests, no SDKs needed
+python -m pytest tests/ -q          # 203 unit tests, no SDKs needed
 ruff check sticky-statusbar/ tests/
 hermes plugins validate sticky-statusbar
 hermes plugins doctor sticky-statusbar

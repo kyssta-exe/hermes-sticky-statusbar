@@ -48,6 +48,12 @@ logger = logging.getLogger(__name__)
 # every few minutes instead.
 _MAX_BACKOFF = 300.0
 
+# How often a running publisher re-reads its own settings. The platform factory
+# runs once per native client, so a hot plugin reload or a settings save never
+# re-runs it — without this re-read the publisher would hold the mode and
+# interval it was born with until the gateway restarted.
+_SETTINGS_REFRESH_SECONDS = 30.0
+
 # One publisher per platform, keyed by platform name: a gateway process has one
 # client per platform, and the adapter rebuilds it on reconnect.
 PUBLISHERS: dict[str, StickyPublisher] = {}
@@ -76,6 +82,7 @@ class StickyPublisher:
         config: StickyConfig,
         store: AnchorStore | None = None,
         label: str = "",
+        ctx: Any = None,
     ) -> None:
         self.platform = (platform or "").lower()
         self.label = label or self.platform
@@ -86,6 +93,10 @@ class StickyPublisher:
         # empty one is falsy and would be silently replaced by a second store
         # pointing at the live home.
         self._store = store if store is not None else AnchorStore()
+        # The live PluginContext (when there is one) so the loop can re-read
+        # settings that changed after the factory wired this publisher.
+        self._ctx = ctx
+        self._settings_checked = 0.0
 
         self._lock = threading.Lock()
         self._tracked: dict[str, TrackedChat] = {}
@@ -152,6 +163,41 @@ class StickyPublisher:
         """
         with self._lock:
             self._config = config
+
+    def bind_context(self, ctx: Any) -> None:
+        """Give the publisher the live ``PluginContext`` so it can re-read settings."""
+        self._ctx = ctx
+
+    def refresh_settings(self, now: float | None = None) -> bool:
+        """Re-read this plugin's settings; True when something changed.
+
+        Called from the loop, throttled. The platform factory runs once per
+        native client — a reload or a settings save never re-runs it — so this is
+        what makes a settings change take effect without a restart. A read that
+        raises leaves the previous settings in place rather than stopping the
+        board.
+        """
+        current = now if now is not None else time.time()
+        if self._ctx is None:
+            return False
+        if (current - self._settings_checked) < _SETTINGS_REFRESH_SECONDS:
+            return False
+        self._settings_checked = current
+        try:
+            fresh = StickyConfig.from_ctx(self._ctx)
+        except Exception as exc:  # noqa: BLE001 - a bad read must not stop the board
+            logger.debug("[%s] sticky-statusbar: could not re-read settings: %s",
+                         self.label, exc)
+            return False
+        if fresh == self._config:
+            return False
+        with self._lock:
+            self._config = fresh
+        logger.info(
+            "[%s] sticky-statusbar: settings changed — %s mode, every %ss",
+            self.label, fresh.mode, fresh.interval_for(self.platform),
+        )
+        return True
 
     def untrack(self, chat_id: str) -> bool:
         """Stop tracking a chat (the message itself is left where it is)."""
@@ -254,6 +300,9 @@ class StickyPublisher:
         """Publish one frame into every tracked chat. Returns edits/posts made."""
         self.ticks += 1
         current = now if now is not None else time.time()
+        self.refresh_settings(current)
+        if not self._config.enabled:
+            return 0
         targets = self.tracked_chats()
         if not targets:
             return 0
@@ -389,12 +438,13 @@ def wire(
     config: StickyConfig,
     store: AnchorStore | None = None,
     label: str = "",
+    ctx: Any = None,
 ) -> StickyPublisher:
     """Platform-handler factory body: attach one publisher to *native*.
 
     Called by a platform adapter at connect time, and again on a late plugin
-    load. Idempotent per platform: re-wiring an already-running publisher keeps
-    the live one (and its anchors) instead of stacking a second loop.
+    load. Idempotent per platform: re-wiring an already-running publisher adopts
+    the new settings (and the live context) instead of stacking a second loop.
     """
     from .sinks import build_sink
 
@@ -405,6 +455,7 @@ def wire(
             # Already publishing: adopt the new settings rather than stacking a
             # second loop, and rather than ignoring the change until a restart.
             existing.update_config(config)
+            existing.bind_context(ctx)
             return existing
         existing.stop()
 
@@ -415,6 +466,7 @@ def wire(
         config,
         store=store,
         label=label or name,
+        ctx=ctx,
     )
     PUBLISHERS[name] = publisher
     return publisher
