@@ -1,0 +1,138 @@
+name: sticky-statusbar
+label: Sticky Statusbar
+version: 1.0.0
+manifest_version: 2
+api_version: 1
+license: MIT
+homepage: https://github.com/kyssta-exe/hermes-sticky-statusbar
+requires_hermes: ">=0.22.0"
+author: kyssta
+description: >
+  A self-updating status message that lives in your chat and shows what the
+  agent is doing right now — the running tool, the recent tool calls, turn
+  state, tokens/sec, cache hit rate, context occupancy and the active model —
+  edited in place on a fixed interval so the history of the conversation piles
+  up around it. On Telegram it pins itself (silently) so it stays visible above
+  the composer; on every other gateway it edits the anchor message, and with
+  mode: bump it deletes and reposts itself at turn end so it is always the last
+  message in the channel. Adds a /sticky slash command, an agent_status tool and
+  a `hermes sticky-statusbar` CLI command. Observer-only: no prompt rewriting,
+  no tool overrides, no core changes.
+tags: [gateway, telegram, discord, status, observability, sticky, metrics]
+
+provides_tools:
+  - agent_status
+
+provides_hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - pre_tool_call
+  - post_tool_call
+  - post_gateway_admission
+  - on_session_end
+
+# No Python dependencies: every platform SDK (python-telegram-bot, discord.py,
+# slack_bolt, ...) is supplied by the platform plugin that is already installed.
+# The plugin imports each SDK lazily inside its sink, so register() works on a
+# host with no gateway platform installed at all.
+
+config_schema:
+  enabled:
+    type: bool
+    default: true
+    label: Enabled
+    description: Post and maintain a self-updating status message
+  mode:
+    type: str
+    choices: [edit, bump]
+    default: edit
+    label: Mode
+    description: >-
+      edit = keep one message and rewrite it in place (quiet, the position never
+      moves); bump = delete and repost the message when a turn ends, so it is
+      always the newest message in the channel
+  header:
+    type: str
+    default: "📊 Hermes"
+    label: Header
+    description: First line of the status message
+  interval_seconds:
+    type: int
+    default: 5
+    label: Update interval (s)
+    description: >-
+      Seconds between status updates (2-600). Each platform enforces its own
+      floor (Telegram 3s, Discord 5s) because the chat is rate limited.
+  pin_telegram:
+    type: bool
+    default: true
+    label: Pin on Telegram
+    description: >-
+      Pin the status message silently, so Telegram keeps it visible above the
+      composer even when the conversation scrolls past it
+  auto_track:
+    type: bool
+    default: true
+    label: Track chats automatically
+    description: >-
+      Start tracking a chat the first time it messages the agent. Turn this off
+      together with Chats to keep the status out of every channel except the
+      ones listed
+  chats:
+    type: str
+    default: ""
+    label: Chats
+    description: >-
+      Extra chats to track, one "platform:chat_id" per line (e.g.
+      telegram:-1001234567890). Tracked even when auto-tracking is off
+  show_tools:
+    type: bool
+    default: true
+    label: Show tool activity
+    description: Show the running tool and the recent tool calls
+  tool_history:
+    type: int
+    default: 3
+    label: Tool history
+    description: How many finished tool calls to list (0-10)
+  show_metrics:
+    type: bool
+    default: true
+    label: Show metrics
+    description: Show tokens/sec, cache hit rate and context occupancy
+  show_model:
+    type: bool
+    default: true
+    label: Show model
+    description: Show the active model
+  show_elapsed:
+    type: bool
+    default: true
+    label: Show elapsed time
+    description: Show how long the current turn has been running
+  show_totals:
+    type: bool
+    default: false
+    label: Show totals
+    description: Show lifetime token totals for this process
+  idle_text:
+    type: str
+    default: "idle · waiting for you"
+    label: Idle text
+    description: What the status says when the agent is not working
+  bar_width:
+    type: int
+    default: 10
+    label: Context bar width
+    description: Context bar cells (3-20)
+  separator:
+    type: str
+    default: " · "
+    label: Separator
+    description: Text between segments on a line
+  max_chars:
+    type: int
+    default: 1800
+    label: Max characters
+    description: Hard cap on the rendered message (200-1900)

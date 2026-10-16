@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dev deps
+        run: pip install "pytest>=8,<9" "pyyaml>=6,<7"
+
+      # The unit suite needs nothing but Python: board.py, telemetry.py,
+      # settings.py and the fake-transport publisher tests import no SDK, and
+      # conftest.py bootstraps the flat plugin directory the same way Hermes'
+      # own capability probe does. tests/test_e2e.py skips itself when the
+      # Hermes source is not importable.
+      - name: Unit tests
+        run: python -m pytest tests/ -q
+
+      - name: Lint
+        run: |
+          pip install "ruff>=0.6,<1"
+          ruff check sticky-statusbar/ tests/
+
+  validate:
+    # The catalog admission gate: the same check `hermes plugins validate` runs
+    # in CI for catalog entries.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Hermes Agent
+        run: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+
+      - name: Validate the plugin
+        run: hermes plugins validate sticky-statusbar
+
+      - name: Doctor
+        run: hermes plugins doctor sticky-statusbar
