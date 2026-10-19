@@ -1,5 +1,5 @@
 name: sticky-statusbar
-repo: https://github.com/kyssta-exe/hermes-sticky-statusbar
+repo: https://github.com/okyssta/hermes-sticky-statusbar
 sha: 41eec96b04f6686ac1ec4bc8d4d65db7eb28b492
 subdir: sticky-statusbar
 version: "1.0.4"
@@ -22,10 +22,10 @@ description: >-
   same message instead of posting a second one; makes no network calls of its
   own, reads no credentials, runs no shell commands, and holds one asyncio task
   per connected platform on that platform's existing event loop.
-maintainer: kyssta-exe
+maintainer: okyssta
 tier: community
 category: platform
-docs_url: https://github.com/kyssta-exe/hermes-sticky-statusbar/blob/41eec96b04f6686ac1ec4bc8d4d65db7eb28b492/README.md
+docs_url: https://github.com/okyssta/hermes-sticky-statusbar/blob/41eec96b04f6686ac1ec4bc8d4d65db7eb28b492/README.md
 readme: true
 platforms: []
 capabilities:

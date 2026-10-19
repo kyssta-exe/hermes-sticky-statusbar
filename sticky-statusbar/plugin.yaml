@@ -4,7 +4,7 @@ version: 1.0.4
 manifest_version: 2
 api_version: 1
 license: MIT
-homepage: https://github.com/kyssta-exe/hermes-sticky-statusbar
+homepage: https://github.com/okyssta/hermes-sticky-statusbar
 requires_hermes: ">=0.22.0"
 author: kyssta
 description: >

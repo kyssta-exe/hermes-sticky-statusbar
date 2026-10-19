@@ -68,7 +68,7 @@ it. That is the closest thing any of these platforms has to a sticky.
 
 ```bash
 # The plugin lives in a subdirectory, so name it after the '#'
-hermes plugins install kyssta-exe/hermes-sticky-statusbar#sticky-statusbar
+hermes plugins install okyssta/hermes-sticky-statusbar#sticky-statusbar
 hermes plugins enable sticky-statusbar
 ```
 
@@ -81,7 +81,7 @@ hermes plugins install sticky-statusbar
 Or drop the directory in by hand:
 
 ```bash
-git clone https://github.com/kyssta-exe/hermes-sticky-statusbar
+git clone https://github.com/okyssta/hermes-sticky-statusbar
 cp -r hermes-sticky-statusbar/sticky-statusbar ~/.hermes/plugins/
 hermes plugins enable sticky-statusbar
 ```

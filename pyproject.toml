@@ -24,9 +24,9 @@ dependencies = []
 dev = ["pytest>=8,<9", "pyyaml>=6,<7"]
 
 [project.urls]
-Homepage = "https://github.com/kyssta-exe/hermes-sticky-statusbar"
+Homepage = "https://github.com/okyssta/hermes-sticky-statusbar"
 Documentation = "https://hermes-agent.nousresearch.com/docs/developer-guide/plugins"
-Issues = "https://github.com/kyssta-exe/hermes-sticky-statusbar/issues"
+Issues = "https://github.com/okyssta/hermes-sticky-statusbar/issues"
 
 # The installable plugin lives in ./sticky-statusbar — a flat directory plugin
 # (plugin.yaml plus sibling modules), which is what `hermes plugins install`
